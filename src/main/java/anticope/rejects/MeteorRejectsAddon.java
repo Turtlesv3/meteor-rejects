@@ -29,6 +29,7 @@ public class MeteorRejectsAddon extends MeteorAddon {
 
         // Modules
         Modules modules = Modules.get();
+		modules.add(new AntiAFK());
         modules.add(new AimAssist());
         modules.add(new AntiBot());
         modules.add(new AntiCrash());
@@ -46,11 +47,14 @@ public class MeteorRejectsAddon extends MeteorAddon {
         modules.add(new AutoSoup());
         modules.add(new AutoTNT());
         modules.add(new AutoWither());
+        modules.add(new AutoSeller());
+        modules.add(new CaptchaSolver());
         modules.add(new BoatGlitch());
         modules.add(new BlockIn());
         modules.add(new BoatPhase());
         modules.add(new Boost());
         modules.add(new BungeeCordSpoof());
+		modules.add(new CaptchaSolver());
         modules.add(new ChatBot());
         modules.add(new ChestAura());
         modules.add(new ChorusExploit());
@@ -106,7 +110,7 @@ public class MeteorRejectsAddon extends MeteorAddon {
         Commands.add(new SetVelocityCommand());
         Commands.add(new TeleportCommand());
         Commands.add(new TerrainExport());
-
+		
         // HUD
         Hud hud = Systems.get(Hud.class);
         hud.register(RadarHud.INFO);
