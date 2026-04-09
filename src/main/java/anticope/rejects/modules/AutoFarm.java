@@ -1,6 +1,7 @@
 package anticope.rejects.modules;
 
 import anticope.rejects.MeteorRejectsAddon;
+import anticope.rejects.utils.PauseOnGUIUtils;
 import anticope.rejects.utils.WorldUtils;
 import meteordevelopment.meteorclient.events.entity.player.BreakBlockEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -21,22 +22,11 @@ import net.minecraft.world.item.HoeItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.LevelReader;
-import net.minecraft.world.level.block.AzaleaBlock;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.CocoaBlock;
-import net.minecraft.world.level.block.CropBlock;
-import net.minecraft.world.level.block.FarmBlock;
-import net.minecraft.world.level.block.MushroomBlock;
-import net.minecraft.world.level.block.NetherWartBlock;
-import net.minecraft.world.level.block.PitcherCropBlock;
-import net.minecraft.world.level.block.SaplingBlock;
-import net.minecraft.world.level.block.SoulSandBlock;
-import net.minecraft.world.level.block.StemBlock;
-import net.minecraft.world.level.block.SweetBerryBushBlock;
+import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+
 import java.util.*;
 
 public class AutoFarm extends Module {
@@ -45,14 +35,64 @@ public class AutoFarm extends Module {
     private final SettingGroup sgHarvest = settings.createGroup("Harvest");
     private final SettingGroup sgPlant = settings.createGroup("Plant");
     private final SettingGroup sgBonemeal = settings.createGroup("Bonemeal");
+    private final SettingGroup sgAbility = settings.createGroup("Ability");
 
     private final Map<BlockPos, Item> replantMap = new HashMap<>();
 
+    // General Settings
+    private final Setting<Shape> shape = sgGeneral.add(new EnumSetting.Builder<Shape>()
+            .name("shape")
+            .description("The shape of the farm area.")
+            .defaultValue(Shape.Sphere)
+            .build()
+    );
+
     private final Setting<Integer> range = sgGeneral.add(new IntSetting.Builder()
             .name("range")
-            .description("Auto farm range.")
+            .description("Auto farm range (for sphere mode).")
             .defaultValue(4)
             .min(1)
+            .visible(() -> shape.get() == Shape.Sphere)
+            .build()
+    );
+
+    private final Setting<Integer> horizontalRange = sgGeneral.add(new IntSetting.Builder()
+        .name("horizontal-range")
+        .description("Horizontal distance to farm (left/right for cuboid).")
+        .defaultValue(4)
+        .min(0)
+        .max(16)
+        .visible(() -> shape.get() == Shape.Cuboid)
+        .build()
+    );
+
+    private final Setting<Integer> verticalRange = sgGeneral.add(new IntSetting.Builder()
+            .name("vertical-range")
+            .description("Vertical distance to farm (up and down).")
+            .defaultValue(2)
+            .min(1)
+            .max(8)
+            .visible(() -> shape.get() == Shape.Cuboid)
+            .build()
+    );
+
+    private final Setting<Integer> forwardRange = sgGeneral.add(new IntSetting.Builder()
+            .name("forward-range")
+            .description("Forward distance to farm (only for cuboid shape).")
+            .defaultValue(6)
+            .min(1)
+            .max(16)
+            .visible(() -> shape.get() == Shape.Cuboid)
+            .build()
+    );
+
+    private final Setting<Integer> backwardRange = sgGeneral.add(new IntSetting.Builder()
+            .name("backward-range")
+            .description("Backward distance to farm (only for cuboid shape).")
+            .defaultValue(2)
+            .min(0)
+            .max(16)
+            .visible(() -> shape.get() == Shape.Cuboid)
             .build()
     );
 
@@ -71,6 +111,21 @@ public class AutoFarm extends Module {
             .build()
     );
 
+    private final Setting<Boolean> pauseOnGui = sgGeneral.add(new BoolSetting.Builder()
+            .name("pause-on-gui")
+            .description("Pause farming when any GUI screen is open.")
+            .defaultValue(true)
+            .build()
+    );
+    
+    private final Setting<Boolean> debugMode = sgAbility.add(new BoolSetting.Builder()
+            .name("debug-mode")
+            .description("Log detailed information about ability activation.")
+            .defaultValue(false)
+            .build()
+    );
+
+    // Till Settings
     private final Setting<Boolean> till = sgTill.add(new BoolSetting.Builder()
             .name("till")
             .description("Turn nearby dirt into farmland.")
@@ -85,6 +140,7 @@ public class AutoFarm extends Module {
             .build()
     );
 
+    // Harvest Settings
     private final Setting<Boolean> harvest = sgHarvest.add(new BoolSetting.Builder()
             .name("harvest")
             .description("Harvest crops.")
@@ -100,6 +156,7 @@ public class AutoFarm extends Module {
             .build()
     );
 
+    // Plant Settings
     private final Setting<Boolean> plant = sgPlant.add(new BoolSetting.Builder()
             .name("plant")
             .description("Plant crops.")
@@ -123,6 +180,7 @@ public class AutoFarm extends Module {
             .build()
     );
 
+    // Bonemeal Settings
     private final Setting<Boolean> bonemeal = sgBonemeal.add(new BoolSetting.Builder()
             .name("bonemeal")
             .description("Bonemeal crops.")
@@ -138,8 +196,64 @@ public class AutoFarm extends Module {
             .build()
     );
 
+    // Ability Settings
+    private final Setting<Boolean> abilityEnabled = sgAbility.add(new BoolSetting.Builder()
+            .name("ability-enabled")
+            .description("Automatically activate power ability (Shift + Right Click).")
+            .defaultValue(false)
+            .build()
+    );
+
+    private final Setting<Integer> abilityCooldown = sgAbility.add(new IntSetting.Builder()
+            .name("ability-cooldown")
+            .description("Cooldown in seconds between ability activations.")
+            .defaultValue(240)
+            .min(1)
+            .max(3600)
+            .visible(abilityEnabled::get)
+            .build()
+    );
+
+    private final Setting<Integer> abilityDuration = sgAbility.add(new IntSetting.Builder()
+            .name("ability-duration")
+            .description("How long the ability lasts in seconds.")
+            .defaultValue(21)
+            .min(1)
+            .max(300)
+            .visible(abilityEnabled::get)
+            .build()
+    );
+
+    private final Setting<Integer> abilityActivationDelay = sgAbility.add(new IntSetting.Builder()
+            .name("activation-delay")
+            .description("Seconds after cooldown ends to activate ability.")
+            .defaultValue(2)
+            .min(0)
+            .max(60)
+            .visible(abilityEnabled::get)
+            .build()
+    );
+
     private final Pool<BlockPos.MutableBlockPos> blockPosPool = new Pool<>(BlockPos.MutableBlockPos::new);
     private final List<BlockPos.MutableBlockPos> blocks = new ArrayList<>();
+
+    // Ability state fields
+    private long lastAbilityActivation = 0;
+    private boolean abilityActive = false;
+    private long abilityActivatedAt = 0;
+    private boolean shiftPressed = false;
+    private int shiftHoldTicks = 0;
+    private int clickCount = 0;
+
+    // Ability sequence states
+    private enum AbilityState {
+        IDLE,
+        HOLDING_SHIFT,
+        FIRST_CLICK,
+        SECOND_CLICK,
+        ACTIVE
+    }
+    private AbilityState abilityState = AbilityState.IDLE;
 
     int actions = 0;
 
@@ -150,6 +264,14 @@ public class AutoFarm extends Module {
     @Override
     public void onDeactivate() {
         replantMap.clear();
+        
+        // Clean up ability state
+        if (shiftPressed) {
+            mc.options.keyShift.setDown(false);
+            shiftPressed = false;
+        }
+        abilityState = AbilityState.IDLE;
+        abilityActive = false;
     }
 
     @EventHandler
@@ -171,11 +293,23 @@ public class AutoFarm extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
+        // Pause if a non-Meteor GUI is open and setting is enabled
+        if (PauseOnGUIUtils.shouldPause(pauseOnGui.get())) {
+            return;
+        }
+
+        // Handle ability activation
+        if (abilityEnabled.get()) {
+            handleAbility();
+        }
+
         actions = 0;
-        BlockIterator.register(range.get(), range.get(), (pos, state) -> {
-            if (mc.player.getEyePosition().distanceTo(Vec3.atCenterOf(pos)) <= range.get())
-                blocks.add(blockPosPool.get().set(pos));
-        });
+        
+        if (shape.get() == Shape.Cuboid) {
+            registerCuboidBlocks();
+        } else {
+            registerSphereBlocks();
+        }
 
         BlockIterator.after(() -> {
             blocks.sort(Comparator.comparingDouble(value -> mc.player.getEyePosition().distanceTo(Vec3.atCenterOf(value))));
@@ -190,8 +324,252 @@ public class AutoFarm extends Module {
 
             for (BlockPos.MutableBlockPos blockPos : blocks) blockPosPool.free(blockPos);
             blocks.clear();
-
         });
+    }
+
+    private boolean hasHarvestableCrops() {
+        if (!harvest.get()) return false;
+        if (mc.player == null || mc.level == null) return false;
+        
+        if (shape.get() == Shape.Cuboid) {
+            Direction facing = mc.player.getDirection();
+            int halfWidth = horizontalRange.get();
+            int forward = forwardRange.get();
+            int backward = backwardRange.get();
+            int vertRange = verticalRange.get();
+            
+            BlockPos playerPos = mc.player.blockPosition();
+            int minX, maxX, minZ, maxZ;
+            
+            switch (facing) {
+                case NORTH -> {
+                    minX = playerPos.getX() - halfWidth;
+                    maxX = playerPos.getX() + halfWidth;
+                    minZ = playerPos.getZ() - forward;
+                    maxZ = playerPos.getZ() + backward;
+                }
+                case SOUTH -> {
+                    minX = playerPos.getX() - halfWidth;
+                    maxX = playerPos.getX() + halfWidth;
+                    minZ = playerPos.getZ() - backward;
+                    maxZ = playerPos.getZ() + forward;
+                }
+                case WEST -> {
+                    minX = playerPos.getX() - forward;
+                    maxX = playerPos.getX() + backward;
+                    minZ = playerPos.getZ() - halfWidth;
+                    maxZ = playerPos.getZ() + halfWidth;
+                }
+                case EAST -> {
+                    minX = playerPos.getX() - backward;
+                    maxX = playerPos.getX() + forward;
+                    minZ = playerPos.getZ() - halfWidth;
+                    maxZ = playerPos.getZ() + halfWidth;
+                }
+                default -> { return false; }
+            }
+            
+            int minY = playerPos.getY() - vertRange;
+            int maxY = playerPos.getY() + vertRange;
+            
+            for (int y = minY; y <= maxY; y++) {
+                for (int x = minX; x <= maxX; x++) {
+                    for (int z = minZ; z <= maxZ; z++) {
+                        BlockPos pos = new BlockPos(x, y, z);
+                        BlockState state = mc.level.getBlockState(pos);
+                        if (state.isAir()) continue;
+                        
+                        Block block = state.getBlock();
+                        if (harvestBlocks.get().contains(block) && isMature(state, block)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        } else {
+            int r = range.get();
+            BlockPos playerPos = mc.player.blockPosition();
+            
+            for (int x = -r; x <= r; x++) {
+                for (int y = -r; y <= r; y++) {
+                    for (int z = -r; z <= r; z++) {
+                        BlockPos pos = playerPos.offset(x, y, z);
+                        double distance = Math.sqrt(x*x + y*y + z*z);
+                        if (distance > r) continue;
+                        
+                        BlockState state = mc.level.getBlockState(pos);
+                        if (state.isAir()) continue;
+                        
+                        Block block = state.getBlock();
+                        if (harvestBlocks.get().contains(block) && isMature(state, block)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    private void handleAbility() {
+        long currentTime = System.currentTimeMillis();
+        long cooldownMs = abilityCooldown.get() * 1000L;
+        long durationMs = abilityDuration.get() * 1000L;
+        long activationDelayMs = abilityActivationDelay.get() * 1000L;
+
+        // Check if ability is currently active
+        if (abilityActive) {
+            if (currentTime - abilityActivatedAt >= durationMs) {
+                abilityActive = false;
+                abilityState = AbilityState.IDLE;
+                lastAbilityActivation = currentTime;
+                info("Ability duration ended. Next activation in " + abilityCooldown.get() + " seconds.");
+            }
+            return;
+        }
+        
+        // Handle the ability sequence state machine
+        switch (abilityState) {
+            case IDLE -> {
+                boolean shouldActivate = false;
+                
+                if (lastAbilityActivation == 0) {
+                    if (currentTime >= activationDelayMs) shouldActivate = true;
+                } else {
+                    long timeSinceLastActivation = currentTime - lastAbilityActivation;
+                    long timeToNextActivation = cooldownMs + activationDelayMs;
+                    if (timeSinceLastActivation >= timeToNextActivation) shouldActivate = true;
+                }
+                
+                // ONLY activate if there are crops to harvest!
+                if (shouldActivate && hasHarvestableCrops()) {
+                    abilityState = AbilityState.HOLDING_SHIFT;
+                    shiftPressed = true;
+                    shiftHoldTicks = 0;
+                    mc.options.keyShift.setDown(true);
+                    info("Crops detected! Holding shift for 1 second...");
+                } else if (shouldActivate) {
+                    lastAbilityActivation = currentTime;
+                    if (debugMode.get()) {
+                        info("No harvestable crops nearby - skipping ability activation");
+                    }
+                }
+            }
+            
+            case HOLDING_SHIFT -> {
+    shiftHoldTicks++;
+    // Hold shift for 10 ticks (500ms)
+    if (shiftHoldTicks >= 10) {
+        // Double-check crops are still there before clicking
+        if (hasHarvestableCrops()) {
+            abilityState = AbilityState.FIRST_CLICK;
+            clickCount = 0;
+        } else {
+            mc.options.keyShift.setDown(false);
+            shiftPressed = false;
+            abilityState = AbilityState.IDLE;
+            lastAbilityActivation = currentTime;
+            info("Crops no longer present - ability cancelled");
+        }
+    }
+}
+
+case FIRST_CLICK -> {
+    Utils.rightClick();
+    info("First right-click");
+    clickCount = 2; // Wait 2 ticks (100ms) before second click
+    abilityState = AbilityState.SECOND_CLICK;
+}
+
+case SECOND_CLICK -> {
+    clickCount--;
+    if (clickCount > 0) {
+        // Still waiting for delay
+        return;
+    }
+    Utils.rightClick();
+    info("Second right-click");
+    
+    mc.options.keyShift.setDown(false);
+    shiftPressed = false;
+    
+    abilityState = AbilityState.ACTIVE;
+    abilityActive = true;
+    abilityActivatedAt = currentTime;
+    
+    info("Ability activated! Duration: " + abilityDuration.get() + " seconds.");
+}
+            
+            case ACTIVE -> {
+                // Already handled by abilityActive check above
+            }
+        }
+    }
+
+    private void registerSphereBlocks() {
+        int r = range.get();
+        BlockIterator.register(r, r, (pos, state) -> {
+            if (mc.player.getEyePosition().distanceTo(Vec3.atCenterOf(pos)) <= r)
+                blocks.add(blockPosPool.get().set(pos));
+        });
+    }
+
+    private void registerCuboidBlocks() {
+        Direction facing = mc.player.getDirection();
+        
+        int halfWidth = horizontalRange.get();
+        int forward = forwardRange.get();
+        int backward = backwardRange.get();
+        int vertRange = verticalRange.get();
+        
+        BlockPos playerPos = mc.player.blockPosition();
+        
+        int minX, maxX, minZ, maxZ;
+        
+        switch (facing) {
+            case NORTH:
+                minX = playerPos.getX() - halfWidth;
+                maxX = playerPos.getX() + halfWidth;
+                minZ = playerPos.getZ() - forward;
+                maxZ = playerPos.getZ() + backward;
+                break;
+            case SOUTH:
+                minX = playerPos.getX() - halfWidth;
+                maxX = playerPos.getX() + halfWidth;
+                minZ = playerPos.getZ() - backward;
+                maxZ = playerPos.getZ() + forward;
+                break;
+            case WEST:
+                minX = playerPos.getX() - forward;
+                maxX = playerPos.getX() + backward;
+                minZ = playerPos.getZ() - halfWidth;
+                maxZ = playerPos.getZ() + halfWidth;
+                break;
+            case EAST:
+                minX = playerPos.getX() - backward;
+                maxX = playerPos.getX() + forward;
+                minZ = playerPos.getZ() - halfWidth;
+                maxZ = playerPos.getZ() + halfWidth;
+                break;
+            default:
+                return;
+        }
+        
+        int minY = playerPos.getY() - vertRange;
+        int maxY = playerPos.getY() + vertRange;
+        
+        for (int y = minY; y <= maxY; y++) {
+            for (int x = minX; x <= maxX; x++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    BlockPos pos = new BlockPos(x, y, z);
+                    BlockState state = mc.level.getBlockState(pos);
+                    if (state.isAir()) continue;
+                    
+                    blocks.add(blockPosPool.get().set(pos));
+                }
+            }
+        }
     }
 
     private boolean till(BlockPos pos, Block block) {
@@ -212,6 +590,15 @@ public class AutoFarm extends Module {
     private boolean harvest(BlockPos pos, BlockState state, Block block) {
         if (!harvest.get()) return false;
         if (!harvestBlocks.get().contains(block)) return false;
+        
+        if (block == Blocks.SUGAR_CANE || block == Blocks.CACTUS) {
+            if (mc.level.getBlockState(pos.below()).getBlock() == block) {
+                BlockUtils.breakBlock(pos, true);
+                return true;
+            }
+            return false;
+        }
+        
         if (!isMature(state, block)) return false;
         if (block instanceof SweetBerryBushBlock)
             mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, new BlockHitResult(Utils.vec3d(pos), Direction.UP, pos, false));
@@ -306,7 +693,9 @@ public class AutoFarm extends Module {
                 block == Blocks.SWEET_BERRY_BUSH ||
                 block == Blocks.COCOA ||
                 block == Blocks.PITCHER_CROP ||
-                block == Blocks.TORCHFLOWER;
+                block == Blocks.TORCHFLOWER ||
+                block == Blocks.SUGAR_CANE ||
+                block == Blocks.CACTUS;
     }
 
     private boolean plantFilter(Item item) {
@@ -319,5 +708,10 @@ public class AutoFarm extends Module {
                 item == Items.NETHER_WART ||
                 item == Items.PITCHER_POD ||
                 item == Items.TORCHFLOWER_SEEDS;
+    }
+
+    public enum Shape {
+        Sphere,
+        Cuboid
     }
 }
